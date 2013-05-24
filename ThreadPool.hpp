@@ -24,88 +24,130 @@
 #ifndef THREAD_POOL_H
 #define THREAD_POOL_H
 
-#include <vector>
+#include <stack>
+#include <mutex>
 #include <queue>
 #include <memory>
 #include <thread>
-#include <mutex>
+#include <vector>
 #include <future>
 #include <stdexcept>
 #include <functional>
 #include <condition_variable>
 
-class ThreadPool {
-public:
-    ThreadPool(size_t = std::thread::hardware_concurrency() );//Default thread count is number of CPU threads
-    template<class F, class... Args>
-    auto enqueue(F&& f, Args&&... args) -> std::future<decltype(std::forward<F>(f)(std::forward<Args>(args)...))>;
-    ~ThreadPool();
-private:
-    // need to keep track of threads so we can join them
-    std::vector< std::thread > workers;
-    // the task queue
-    std::queue< std::function<void()> > tasks;
-
-    // synchronization
-    std::mutex queue_mutex;
-    std::condition_variable condition;
-
-	std::atomic<bool> isActive;
+struct pTask{
+	const int priority;
+	std::function<void()> mTask;
+	pTask(int p, std::function<void()> f) : priority(p), mTask(f) {}
+	bool operator< (const pTask& other){ return this->priority < other.priority;}
 };
 
-// the constructor just launches some amount of workers
-inline ThreadPool::ThreadPool(size_t threads) : isActive(true)
-{
-    for(size_t i = 0 ; i < threads; i++)
-        workers.push_back(std::thread(
-            [this]
-            {
-                while(true)
-                {
+typedef std::queue<std::function<void()>> 	FIFO_POLICY;
+typedef std::stack<std::function<void()>> 	LIFO_POLICY;
+//typedef std::stack<std::function<void()>> 	PRIORITY_POLICY;
+
+template <typename policy_type = FIFO_POLICY>
+class ThreadPool {
+private:
+    std::vector<std::thread> mWorkers;
+	policy_type mTasks;
+
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+	std::atomic<bool> isActive;
+
+public:
+	ThreadPool (size_t numThreads = std::thread::hardware_concurrency() ){
+	    for(size_t i = 0 ; i < numThreads; i++){
+	        mWorkers.emplace_back(std::thread(
+	            [this] {
+    	            while(true){
+    	                std::unique_lock<std::mutex> lock(this->queue_mutex);
+    	                while( this->isActive.load() && this->mTasks.empty())
+    	                    this->condition.wait(lock);
+    	                if( ! this->isActive.load() && this->mTasks.empty())
+    	                    return;
+    	                std::function<void()> lNextTask(this->mTasks.front());
+    	                this->mTasks.pop();
+    	                lock.unlock();
+    	                lNextTask();
+    	            }
+    	        }
+    	    ));
+		}
+	}
+
+	template<class F, class... Args>
+	auto enqueue(F&& f, Args&&... args) -> std::future<decltype(std::forward<F>(f)(std::forward<Args>(args)...))> {
+	    typedef decltype(std::forward<F>(f)(std::forward<Args>(args)...)) return_type;
+	    // Don't allow enqueueing after stopping the pool
+	    if ( ! isActive.load() ) {
+	        throw std::runtime_error("enqueue on stopped ThreadPool");
+		}
+
+	    auto task = std::make_shared<std::packaged_task<return_type()>>( std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
+
+		std::future<return_type> res = task->get_future();
+		{
+			std::unique_lock<std::mutex> lock(queue_mutex);
+			mTasks.push([task](){ (*task)(); });
+		}
+		condition.notify_one();
+		return res;
+	}
+
+
+	int pending(void) {
+		std::unique_lock<std::mutex> lock(queue_mutex);
+		return this->mTasks.size();
+	}
+
+	~ThreadPool(void) {
+		this->isActive = false;
+		condition.notify_all();
+		for(std::thread& t : mWorkers)
+			t.join();
+	}
+};
+
+template<>
+ThreadPool<LIFO_POLICY>::ThreadPool (size_t numThreads){
+    for(size_t i = 0 ; i < numThreads; i++){
+        mWorkers.emplace_back(std::thread(
+            [this] {
+   	            while(true){
+   	                std::unique_lock<std::mutex> lock(this->queue_mutex);
+   	                while( this->isActive.load() && this->mTasks.empty())
+   	                    this->condition.wait(lock);
+   	                if( ! this->isActive.load() && this->mTasks.empty())
+   	                    return;
+   	                std::function<void()> lNextTask(this->mTasks.top());
+   	                this->mTasks.pop();
+   	                lock.unlock();
+   	                lNextTask();
+   	            }
+   	        }
+   	    ));
+	}
+}
+
+ThreadPool<PRIORITY_POLICY>::ThreadPool (size_t numThreads){
+    for(size_t i = 0 ; i < numThreads; i++){
+        mWorkers.emplace_back(std::thread(
+            [this] {
+                while(true){
                     std::unique_lock<std::mutex> lock(this->queue_mutex);
-                    while( this->isActive.load() && this->tasks.empty())
+                    while( this->isActive.load() && this->mTasks.empty())
                         this->condition.wait(lock);
-                    if( ! this->isActive && this->tasks.empty())
+                    if( ! this->isActive.load() && this->mTasks.empty())
                         return;
-                    std::function<void()> task(this->tasks.front());
-                    this->tasks.pop();
+                    std::function<void()> lNextTask(this->mTasks.top());
+                    this->mTasks.pop();
                     lock.unlock();
-                    task();
+                    lNextTask();
                 }
             }
         ));
-}
-
-// add new work item to the pool
-template<class F, class... Args>
-auto ThreadPool::enqueue(F&& f, Args&&... args) -> std::future<decltype(std::forward<F>(f)(std::forward<Args>(args)...))>
-{
-    typedef decltype(std::forward<F>(f)(std::forward<Args>(args)...)) return_type;
-
-    // don't allow enqueueing after stopping the pool
-    if( ! isActive.load() )
-        throw std::runtime_error("enqueue on stopped ThreadPool");
-
-    auto task = std::make_shared< std::packaged_task<return_type()> >(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...)
-        );
-
-    std::future<return_type> res = task->get_future();
-    {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        tasks.push([task](){ (*task)(); });
     }
-    condition.notify_one();
-    return res;
 }
-
-// the destructor joins all threads
-inline ThreadPool::~ThreadPool()
-{
-	this->isActive = false;
-    condition.notify_all();
-    for(std::thread& t : workers)
-        t.join();
-}
-
 #endif
