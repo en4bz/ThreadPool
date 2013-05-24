@@ -35,12 +35,11 @@
 #include <functional>
 #include <condition_variable>
 
-#include <iostream>
 
 class prioritized_task{
 private:
     int priority;
-    std::function<void()> task;
+    std::function<void(void)> task;
 public:
     prioritized_task(int p, std::function<void(void)>&& f) : priority(p), task(f) {}
 
@@ -88,8 +87,8 @@ public:
         }
 
     template<class F, class... Args>
-    auto enqueue(F&& f, Args&&... args) -> std::future<decltype(std::forward<F>(f)(std::forward<Args>(args)...))> {
-        typedef decltype(std::forward<F>(f)(std::forward<Args>(args)...)) return_type;
+    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>{
+        typedef typename std::result_of<F(Args...)>::type return_type;
         // Don't allow enqueueing after stopping the pool
         if ( ! isActive.load() )
             throw std::runtime_error("enqueue on stopped ThreadPool");
@@ -130,7 +129,7 @@ ThreadPool<FIFO_POLICY>::ThreadPool (size_t numThreads){
                         this->condition.wait(lock);
                     if( ! this->isActive.load() && this->mTasks.empty())
                         return;
-                    std::function<void()> lNextTask(this->mTasks.front());
+                    std::function<void(void)> lNextTask(this->mTasks.front());
                     this->mTasks.pop();
                     lock.unlock();
                     lNextTask();
@@ -142,8 +141,8 @@ ThreadPool<FIFO_POLICY>::ThreadPool (size_t numThreads){
 
 template<>
 template<class F, class... Args>
-auto ThreadPool<PRIORITY_POLICY>::enqueue(F&& f, Args&&... args) -> std::future<decltype(std::forward<F>(f)(std::forward<Args>(args)...))> {
-    typedef decltype(std::forward<F>(f)(std::forward<Args>(args)...)) return_type;
+auto ThreadPool<PRIORITY_POLICY>::enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type> {
+    typedef typename std::result_of<F(Args...)>::type return_type;
     // Don't allow enqueueing after stopping the pool
     if ( ! isActive.load() )
         throw std::runtime_error("enqueue on stopped ThreadPool");
