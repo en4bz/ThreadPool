@@ -2,12 +2,10 @@
 #include <vector>
 #include <chrono>
 
-#include "ThreadPool.h"
+#include "ThreadPool.hpp"
 
-int main()
-{
-    
-    ThreadPool pool(4);
+int main(void){
+    ThreadPool<PRIORITY_POLICY> pool(1);
     std::vector< std::future<int> > results;
 
     for(int i = 0; i < 8; ++i) {
@@ -19,11 +17,11 @@ int main()
                 return i*i;
             })
         );
-    }   
-    
+    }
+
     for(size_t i = 0;i<results.size();++i)
         std::cout << results[i].get() << ' ';
     std::cout << std::endl;
-    
+
     return 0;
 }
