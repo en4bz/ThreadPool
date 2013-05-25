@@ -4,8 +4,8 @@ ThreadPool
 A simple C++11 Thread Pool implementation.
 
 Note: The default constructor `ThreadPool<POLICY> name;` will create a ThreadPool with a number of worker threads 
-equivelent to `std::thread::hardware_concurrency()` or in other words the name number of threads, 
-including hyperthreading, of the underlying CPU.
+equivelent to `std::thread::hardware_concurrency()` or in other words the same number of threads, 
+including hyperthreads, of the underlying CPU. Should be the same value as `nproc`.
 
 Now with queueing policies!
  * `FIFO_POLICY` (default)
