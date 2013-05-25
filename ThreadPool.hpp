@@ -21,8 +21,8 @@
  *  distribution.
  */
 
-#ifndef THREAD_POOL_H
-#define THREAD_POOL_H
+#ifndef THREAD_POOL_HPP
+#define THREAD_POOL_HPP
 
 #include <stack>
 #include <queue>
@@ -33,8 +33,10 @@
 #include <future>
 #include <stdexcept>
 #include <functional>
+#include <type_traits>
 #include <condition_variable>
 
+#include <iostream>
 
 class prioritized_task{
 private:
@@ -67,27 +69,49 @@ private:
     std::atomic<bool> isActive;
 public:
     ThreadPool (size_t numThreads = std::thread::hardware_concurrency() ){
-            for(size_t i = 0 ; i < numThreads; i++){
-                mWorkers.emplace_back(std::thread(
-                    [this] {
-                        while(true){
-                            std::unique_lock<std::mutex> lock(this->queue_mutex);
-                            while( this->isActive.load() && this->mTasks.empty())
-                                this->condition.wait(lock);
-                            if( ! this->isActive.load() && this->mTasks.empty())
-                                return;
-                            auto lNextTask(this->mTasks.top());
-                            this->mTasks.pop();
-                            lock.unlock();
-                            lNextTask();
-                        }
+        for(size_t i = 0 ; i < numThreads; i++){
+            mWorkers.emplace_back(std::thread(
+                [this] {
+                    while(true){
+                        std::unique_lock<std::mutex> lock(this->queue_mutex);
+                        while( this->isActive.load() && this->mTasks.empty())
+                            this->condition.wait(lock);
+                        if( ! this->isActive.load() && this->mTasks.empty())
+                            return;
+                        auto lNextTask(this->mTasks.top());
+                        this->mTasks.pop();
+                        lock.unlock();
+                        lNextTask();
                     }
-                ));
-            }
+                }
+            ));
         }
+    }
 
-    template<class F, class... Args>
-    auto enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type>{
+
+    template<class F, class... Args> //Below is the return type...Yes it is ridiculous, but it works. Enabled if policy_tpye IS NOT PRIORITY
+    typename std::enable_if< ! std::is_same<policy_type,PRIORITY_POLICY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
+    enqueue(F&& f, Args&&... args){
+        typedef typename std::result_of<F(Args...)>::type return_type;
+        // Don't allow enqueueing after stopping the pool
+        if ( ! isActive.load() )
+            throw std::runtime_error("enqueue on stopped ThreadPool");
+
+        auto task = std::make_shared<std::packaged_task<return_type()>>(
+            std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
+
+        std::future<return_type> result = task->get_future();
+        {
+            std::unique_lock<std::mutex> lock(queue_mutex);
+            mTasks.push([task](){ (*task)(); });
+        }
+        condition.notify_one();
+        return result;
+    }
+
+    template<class F, class... Args> //Below is the return type...Yes it is ridiculous, but it works. Enabled if policy_tpye IS PRIORITY
+    typename std::enable_if< std::is_same<policy_type,PRIORITY_POLICY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
+    enqueue(int priority, F&& f, Args&&... args){
         typedef typename std::result_of<F(Args...)>::type return_type;
         // Don't allow enqueueing after stopping the pool
         if ( ! isActive.load() )
@@ -99,18 +123,18 @@ public:
         std::future<return_type> res = task->get_future();
         {
             std::unique_lock<std::mutex> lock(queue_mutex);
-            mTasks.push([task](){ (*task)(); });
+            mTasks.push(prioritized_task(priority, [task](void){ (*task)();}));
         }
         condition.notify_one();
         return res;
     }
 
-    int pending(void) {
+    int pending(void){
         std::unique_lock<std::mutex> lock(queue_mutex);
         return this->mTasks.size();
     }
 
-    ~ThreadPool(void) {
+    ~ThreadPool(void){
         this->isActive = false;
         condition.notify_all();
         for(std::thread& t : mWorkers)
@@ -137,25 +161,5 @@ ThreadPool<FIFO_POLICY>::ThreadPool (size_t numThreads){
             }
         ));
     }
-}
-
-template<>
-template<class F, class... Args>
-auto ThreadPool<PRIORITY_POLICY>::enqueue(F&& f, Args&&... args) -> std::future<typename std::result_of<F(Args...)>::type> {
-    typedef typename std::result_of<F(Args...)>::type return_type;
-    // Don't allow enqueueing after stopping the pool
-    if ( ! isActive.load() )
-        throw std::runtime_error("enqueue on stopped ThreadPool");
-
-    auto task = std::make_shared<std::packaged_task<return_type()>>(
-        std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
-
-    std::future<return_type> res = task->get_future();
-    {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        mTasks.push(prioritized_task(0, [task](void){ (*task)();}));
-    }
-    condition.notify_one();
-    return res;
 }
 #endif
