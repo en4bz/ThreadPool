@@ -78,7 +78,7 @@ public:
                             this->condition.wait(lock);
                         if( ! this->isActive.load() && this->mTasks.empty())
                             return;
-                        auto lNextTask(this->mTasks.top());
+                        auto lNextTask = std::move (this->mTasks.top());
                         this->mTasks.pop();
                         lock.unlock();
                         lNextTask();
@@ -88,6 +88,7 @@ public:
         }
     }
 
+    ThreadPool(const ThreadPool& to_copy) = delete; //Probably wouldn't and shouldn't copy this.
 
     template<class F, class... Args> //Below is the return type...Yes it is ridiculous, but it works. Enabled if policy_tpye IS NOT PRIORITY
     typename std::enable_if< ! std::is_same<policy_type,PRIORITY_POLICY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
