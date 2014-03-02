@@ -38,12 +38,14 @@
 
 #include <iostream>
 
+typedef std::function<void(void)> task_t;
+
 class prioritized_task{
 private:
     int priority;
-    std::function<void(void)> task;
+    task_t task;
 public:
-    prioritized_task(int p, std::function<void(void)>&& f) : priority(p), task(f) {}
+    prioritized_task(int p, task_t&& f) : priority(p), task(f) {}
 
     bool operator< (const prioritized_task& other) const{
         return this->priority < other.priority;
@@ -54,11 +56,11 @@ public:
     }
 };
 
-typedef std::queue<std::function<void(void)>>   FIFO_POLICY;
-typedef std::stack<std::function<void(void)>>   LIFO_POLICY;
-typedef std::priority_queue<prioritized_task>   PRIORITY_POLICY;
+typedef std::queue<task_t> FIFO;
+typedef std::stack<task_t> LIFO;
+typedef std::priority_queue<prioritized_task> PRIORITY;
 
-template <typename policy_type = FIFO_POLICY>
+template <typename policy_type = FIFO>
 class ThreadPool {
 private:
     std::vector<std::thread> mWorkers;
@@ -68,38 +70,38 @@ private:
     std::condition_variable condition;
     std::atomic<bool> isActive;
 public:
-    ThreadPool (size_t numThreads = std::thread::hardware_concurrency() ){
+    ThreadPool (size_t numThreads = std::thread::hardware_concurrency() ) : isActive(true){
         for(size_t i = 0 ; i < numThreads; i++){
             mWorkers.emplace_back(std::thread(
-                [this] {
-                    while(true){
-                        std::unique_lock<std::mutex> lock(this->queue_mutex);
-                        while( this->isActive.load() && this->mTasks.empty())
-                            this->condition.wait(lock);
-                        if( ! this->isActive.load() && this->mTasks.empty())
-                            return;
-                        auto lNextTask = std::move (this->mTasks.top());
-                        this->mTasks.pop();
-                        lock.unlock();
-                        lNextTask();
-                    }
+            [this] {
+                while(true){
+                    std::unique_lock<std::mutex> lock(this->queue_mutex);
+                    while( this->isActive.load() && this->mTasks.empty())
+                        this->condition.wait(lock);
+                    if( ! this->isActive.load() && this->mTasks.empty())
+                        return;
+                    auto lNextTask = std::move (this->mTasks.top());
+                    this->mTasks.pop();
+                    lock.unlock();
+                    lNextTask();
                 }
+            }
             ));
         }
     }
 
-    ThreadPool(const ThreadPool& to_copy) = delete; //Probably wouldn't and shouldn't copy this.
+    ThreadPool(ThreadPool& to_copy) = delete; //Probably wouldn't and shouldn't copy this.
+    void operator =(ThreadPool& to_copy) = delete;
 
     template<class F, class... Args> //Below is the return type...Yes it is ridiculous, but it works. Enabled if policy_tpye IS NOT PRIORITY
-    typename std::enable_if< ! std::is_same<policy_type,PRIORITY_POLICY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
+    typename std::enable_if< ! std::is_same<policy_type,PRIORITY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
     enqueue(F&& f, Args&&... args){
         typedef typename std::result_of<F(Args...)>::type return_type;
         // Don't allow enqueueing after stopping the pool
         if ( ! isActive.load() )
             throw std::runtime_error("enqueue on stopped ThreadPool");
 
-        auto task = std::make_shared<std::packaged_task<return_type()>>(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
+        auto task = std::make_shared<std::packaged_task<return_type()>>(std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
 
         std::future<return_type> result = task->get_future();
         {
@@ -111,15 +113,14 @@ public:
     }
 
     template<class F, class... Args> //Below is the return type...Yes it is ridiculous, but it works. Enabled if policy_tpye IS PRIORITY
-    typename std::enable_if< std::is_same<policy_type,PRIORITY_POLICY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
+    typename std::enable_if< std::is_same<policy_type,PRIORITY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
     enqueue(int priority, F&& f, Args&&... args){
         typedef typename std::result_of<F(Args...)>::type return_type;
         // Don't allow enqueueing after stopping the pool
         if ( ! isActive.load() )
             throw std::runtime_error("enqueue on stopped ThreadPool");
 
-        auto task = std::make_shared<std::packaged_task<return_type()>>(
-            std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
+        auto task = std::make_shared<std::packaged_task<return_type()>>(std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
 
         std::future<return_type> res = task->get_future();
         {
@@ -139,27 +140,27 @@ public:
         this->isActive = false;
         condition.notify_all();
         for(std::thread& t : mWorkers)
-        t.join();
+            t.join();
     }
 };
 
 template<>
-ThreadPool<FIFO_POLICY>::ThreadPool (size_t numThreads){
+ThreadPool<FIFO>::ThreadPool (size_t numThreads) : isActive(true){
     for(size_t i = 0 ; i < numThreads; i++){
         mWorkers.emplace_back(std::thread(
-            [this] {
-                while(true){
-                    std::unique_lock<std::mutex> lock(this->queue_mutex);
-                    while( this->isActive.load() && this->mTasks.empty())
-                        this->condition.wait(lock);
-                    if( ! this->isActive.load() && this->mTasks.empty())
-                        return;
-                    std::function<void(void)> lNextTask(this->mTasks.front());
-                    this->mTasks.pop();
-                    lock.unlock();
-                    lNextTask();
-                }
+        [this] {
+            while(true){
+                std::unique_lock<std::mutex> lock(this->queue_mutex);
+                while( this->isActive.load() && this->mTasks.empty())
+                    this->condition.wait(lock);
+                if( ! this->isActive.load() && this->mTasks.empty())
+                    return;
+                task_t lNextTask(this->mTasks.front());
+                this->mTasks.pop();
+                lock.unlock();
+                lNextTask();
             }
+        }
         ));
     }
 }
