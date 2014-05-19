@@ -93,8 +93,8 @@ public:
     ThreadPool(ThreadPool& to_copy) = delete; //Probably wouldn't and shouldn't copy this.
     void operator =(ThreadPool& to_copy) = delete;
 
-    template<class F, class... Args, typename = typename std::enable_if< !std::is_same<policy_type,PRIORITY>::value >>
-    std::future<typename std::result_of<F(Args...)>::type >
+    template<class F, class... Args> //Below is the return type...Yes it is ridiculous, but it works. Enabled if policy_tpye IS NOT PRIORITY
+    typename std::enable_if< ! std::is_same<policy_type,PRIORITY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
     enqueue(F&& f, Args&&... args){
         typedef typename std::result_of<F(Args...)>::type return_type;
         // Don't allow enqueueing after stopping the pool
@@ -112,8 +112,8 @@ public:
         return result;
     }
 
-    template<class F, class... Args, typename = typename std::enable_if< std::is_same<policy_type,PRIORITY>::value >>
-    std::future<typename std::result_of<F(Args...)>::type > 
+    template<class F, class... Args> //Below is the return type...Yes it is ridiculous, but it works. Enabled if policy_tpye IS PRIORITY
+    typename std::enable_if< std::is_same<policy_type,PRIORITY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
     enqueue(int priority, F&& f, Args&&... args){
         typedef typename std::result_of<F(Args...)>::type return_type;
         // Don't allow enqueueing after stopping the pool
