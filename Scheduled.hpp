@@ -49,7 +49,12 @@ public:
                 while(true){
                     std::unique_lock<std::mutex> lock(this->queue_mutex);
                     while( (this->isActive.load() && this->mTasks.empty()) || (!mTasks.empty() && mTasks.top().time > std::chrono::steady_clock::now()) ){
-                        this->condition.wait_until(lock, mTasks.top().time);
+                        if( this->mTasks.empty() ){
+                            this->condition.wait(lock);
+                        }
+                        else{
+                            this->condition.wait_until(lock, mTasks.top().time);
+                        }
                     }
                     if( ! this->isActive.load() && this->mTasks.empty())
                         return;
