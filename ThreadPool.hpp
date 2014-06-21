@@ -71,24 +71,26 @@ private:
     std::atomic<bool> isActive;
 public:
     ThreadPool (size_t numThreads = std::thread::hardware_concurrency() ) : isActive(true){
-        for(size_t i = 0 ; i < numThreads; i++){
-            mWorkers.emplace_back(std::thread(
-            [this] {
-                while(true){
-                    std::unique_lock<std::mutex> lock(this->queue_mutex);
-                    while( this->isActive.load() && this->mTasks.empty())
-                        this->condition.wait(lock);
-                    if( ! this->isActive.load() && this->mTasks.empty())
-                        return;
-                    auto lNextTask = std::move (this->mTasks.top());
-                    this->mTasks.pop();
-                    lock.unlock();
-                    lNextTask();
-                }
-            }
-            ));
+        for(size_t i = 0 ; i < numThreads; i++)
+        	mWorkers.emplace_back(std::thread(&ThreadPool::scheduler_loop,this));
+    }
+
+private:
+	void scheduler_loop(){
+   		while(1){
+        	std::unique_lock<std::mutex> lock(this->queue_mutex);
+            while(this->mTasks.empty()){
+				if( !this->isActive.load() ) return;
+            	this->condition.wait(lock);
+			}
+            std::function<void()> lNextTask = this->mTasks.top();
+            this->mTasks.pop();
+            lock.unlock();
+            lNextTask();
         }
     }
+
+public:
 
     ThreadPool(ThreadPool& to_copy) = delete; //Probably wouldn't and shouldn't copy this.
     void operator =(ThreadPool& to_copy) = delete;
@@ -97,8 +99,7 @@ public:
     typename std::enable_if< ! std::is_same<policy_type,PRIORITY>::value, std::future<typename std::result_of<F(Args...)>::type> >::type
     enqueue(F&& f, Args&&... args){
         typedef typename std::result_of<F(Args...)>::type return_type;
-        // Don't allow enqueueing after stopping the pool
-        if ( ! isActive.load() )
+        if ( ! isActive.load() ) // Don't allow enqueueing after stopping the pool
             throw std::runtime_error("enqueue on stopped ThreadPool");
 
         auto task = std::make_shared<std::packaged_task<return_type()>>(std::bind(std::forward<F>(f), std::forward<Args>(args)...) );
@@ -136,11 +137,15 @@ public:
         return this->mTasks.size();
     }
 
-    ~ThreadPool(void){
-        this->isActive = false;
+	void close(){
+	    this->isActive.store(false);
         condition.notify_all();
         for(std::thread& t : mWorkers)
             t.join();
+	}
+
+    ~ThreadPool(void){
+		this->close();
     }
 };
 
