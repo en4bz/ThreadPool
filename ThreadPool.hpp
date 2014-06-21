@@ -72,17 +72,17 @@ private:
 public:
     ThreadPool (size_t numThreads = std::thread::hardware_concurrency() ) : isActive(true){
         for(size_t i = 0 ; i < numThreads; i++)
-        	mWorkers.emplace_back(std::thread(&ThreadPool::scheduler_loop,this));
+            mWorkers.emplace_back(std::thread(&ThreadPool::scheduler_loop,this));
     }
 
 private:
-	void scheduler_loop(){
-   		while(1){
-        	std::unique_lock<std::mutex> lock(this->queue_mutex);
+    void scheduler_loop(){
+        while(1){
+            std::unique_lock<std::mutex> lock(this->queue_mutex);
             while(this->mTasks.empty()){
-				if( !this->isActive.load() ) return;
-            	this->condition.wait(lock);
-			}
+                if( !this->isActive.load() ) return;
+                this->condition.wait(lock);
+            }
             std::function<void()> lNextTask = this->mTasks.top();
             this->mTasks.pop();
             lock.unlock();
@@ -137,15 +137,15 @@ public:
         return this->mTasks.size();
     }
 
-	void close(){
-	    this->isActive.store(false);
+    void close(){
+        this->isActive.store(false);
         condition.notify_all();
         for(std::thread& t : mWorkers)
             t.join();
-	}
+    }
 
     ~ThreadPool(void){
-		this->close();
+        this->close();
     }
 };
 
